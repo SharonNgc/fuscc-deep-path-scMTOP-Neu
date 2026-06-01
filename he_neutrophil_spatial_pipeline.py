@@ -19,9 +19,6 @@ Notes
 1. This script assumes that the HoVer-Net repository and required graph utility
    modules are available locally.
 2. Replace placeholder paths by command-line arguments.
-3. "immune" is used as the standardized term for the original lymphocyte label.
-4. Macrophage-related final features are intentionally excluded.
-5. "stromal" is used consistently instead of "connective".
 """
 
 from __future__ import annotations
@@ -54,7 +51,6 @@ VALID_WSI_EXTS = [".svs", ".ndpi", ".tif", ".tiff", ".mrxs"]
 CELL_TYPE_CODE = {
     "tumor": 1,      # T
     "immune": 2,    # originally lymph/L; standardized here as immune
-    "macro": 3,     # excluded from the final feature table
     "neu": 4,       # neutrophils
     "stromal": 5,   # standardized from connective/stroma
 }
@@ -317,8 +313,7 @@ def merge_one_json(
     detections from the neutrophil-focused model can replace overlapping base
     detections when the overlap ratio exceeds ``overlap_threshold``.
 
-    The output keeps cell types 1-6 for graph-module compatibility. Macrophage-
-    related final features are excluded later.
+    The output keeps cell types 1-6 for graph-module compatibility.
     """
     classic_json_path = Path(classic_json_path)
     neutrophil_json_path = Path(neutrophil_json_path)
@@ -374,7 +369,7 @@ def merge_one_json(
     for cell_id, cell_info in ori_data["nuc"].items():
         merged_data["nuc"][cell_id] = cell_info
 
-    # Types 2/3/4 are retained for compatibility; macrophage final features are excluded.
+    # Types 2/3/4 are retained for compatibility.
     for neu_id_str, neu_cell_info in neu_data["nuc"].items():
         neu_type = neu_cell_info.get("type", None)
         if neu_type not in [2, 3, 4]:
@@ -421,7 +416,6 @@ def merge_one_json(
         if cell_type in [
             CELL_TYPE_CODE["tumor"],
             CELL_TYPE_CODE["immune"],
-            CELL_TYPE_CODE["macro"],
             CELL_TYPE_CODE["neu"],
             CELL_TYPE_CODE["stromal"],
         ]:
@@ -461,7 +455,6 @@ def run_one_graph_feature_extraction(
         <sample>_Feats_S.csv  : stromal cells
         <sample>_Edges.csv    : graph edges
 
-    Macrophage-specific feature files are not exported in this public version.
     """
     from WSIGraph_Alter_ly import constructGraphFromDict
     from utils_xml import get_windows
