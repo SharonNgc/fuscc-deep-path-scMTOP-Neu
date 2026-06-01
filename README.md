@@ -1,6 +1,10 @@
 # HE Neutrophil-Centered Spatial Feature Pipeline
 
-This repository provides a de-identified Python pipeline for extracting neutrophil-centered spatial features from H&E-stained whole-slide images (WSIs). The workflow combines HoVer-Net-based cell detection/classification, merged cell-level JSON outputs, cell-graph construction, and final feature integration.
+This repository provides a de-identified Python pipeline for extracting neutrophil-centered spatial features from H&E-stained whole-slide images (WSIs).
+
+This work is adapted from the [sc-MTOP framework](https://github.com/fuscc-deep-path/sc_MTOP). The same general software environment, dependency structure, and runtime assumptions as sc-MTOP are expected, including HoVer-Net-based nuclear segmentation/classification, OpenSlide support, GPU-based WSI inference, and graph-based spatial feature extraction. Please refer to the original sc-MTOP repository for baseline installation and environment requirements.
+
+The adapted workflow combines HoVer-Net-based cell detection/classification, merged cell-level JSON outputs, cell-graph construction, and final feature integration.
 
 ## Overview
 
@@ -25,7 +29,7 @@ The final output is restricted to the following neutrophil-centered interaction 
 - `Neu-immune`
 - `Neu-stromal`
 
-Here, `immune` is used as the standardized term for the original lymphocyte-related label, and `stromal` is used consistently instead of connective. Macrophage-related final features are intentionally excluded.
+Here, `immune` is used as the standardized term for the original lymphocyte-related label, and `stromal` is used consistently instead of connective. Macrophage-related and residual non-target cell features are intentionally excluded from the final output.
 
 ## Expected folder structure
 
@@ -44,7 +48,7 @@ project_root/
 
 ## Required external components
 
-This script assumes that the following project-specific dependencies are available locally:
+This script assumes the same baseline dependencies as sc-MTOP and additionally expects the following project-specific components to be available locally:
 
 - HoVer-Net inference code
 - HoVer-Net model weights
@@ -129,4 +133,4 @@ These rules are applied before calculating sample-level mean feature values.
 
 ## Notes
 
-This public version removes local private paths, personal file names, and nonessential cohort-specific references. The labels are standardized to tumor, immune, neutrophil, stromal, and other categories for clearer reuse.
+This public version removes local private paths, personal file names, and nonessential cohort-specific references. The labels are standardized to tumor, immune, neutrophil, and stromal categories for clearer reuse.

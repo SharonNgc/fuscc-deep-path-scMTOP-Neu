@@ -57,7 +57,6 @@ CELL_TYPE_CODE = {
     "macro": 3,     # excluded from the final feature table
     "neu": 4,       # neutrophils
     "stromal": 5,   # standardized from connective/stroma
-    "other": 6,
 }
 
 FINAL_INTERACTION_SPECS = [
@@ -340,7 +339,6 @@ def merge_one_json(
     # Re-map classic model labels following the original implementation.
     type_mapping_ori = {
         3: CELL_TYPE_CODE["stromal"],
-        4: CELL_TYPE_CODE["other"],
     }
 
     ori_nuc = {}
@@ -420,7 +418,13 @@ def merge_one_json(
         cell_type = cell_info.get("type", None)
         if cell_type is None:
             continue
-        if 1 <= cell_type <= 6:
+        if cell_type in [
+            CELL_TYPE_CODE["tumor"],
+            CELL_TYPE_CODE["immune"],
+            CELL_TYPE_CODE["macro"],
+            CELL_TYPE_CODE["neu"],
+            CELL_TYPE_CODE["stromal"],
+        ]:
             cell_info = normalize_bbox(cell_info)
             final_nuc[str(new_cell_id)] = cell_info
             new_cell_id += 1
@@ -455,7 +459,6 @@ def run_one_graph_feature_extraction(
         <sample>_Feats_I.csv  : immune cells, originally lymph/L
         <sample>_Feats_N.csv  : neutrophils
         <sample>_Feats_S.csv  : stromal cells
-        <sample>_Feats_O.csv  : other cells
         <sample>_Edges.csv    : graph edges
 
     Macrophage-specific feature files are not exported in this public version.
@@ -499,7 +502,6 @@ def run_one_graph_feature_extraction(
         "I": [CELL_TYPE_CODE["immune"]],
         "N": [CELL_TYPE_CODE["neu"]],
         "S": [CELL_TYPE_CODE["stromal"]],
-        "O": [CELL_TYPE_CODE["other"]],
     }
 
     graph_pair_tokens_by_output = {
@@ -507,7 +509,6 @@ def run_one_graph_feature_extraction(
         "I": ["L"],
         "N": ["N"],
         "S": ["S"],
-        "O": ["O"],
     }
 
     col_dist = defaultdict(list)

@@ -2,6 +2,8 @@
 
 This Markdown notebook provides a compact, GitHub-readable description of the de-identified pipeline.
 
+This workflow is adapted from the [sc-MTOP framework](https://github.com/fuscc-deep-path/sc_MTOP). It assumes the same general environment and dependency requirements as sc-MTOP, including HoVer-Net inference, OpenSlide support, GPU-based WSI processing, and graph-based spatial feature extraction.
+
 ## 1. Workflow
 
 ```text
@@ -29,7 +31,7 @@ Neu-immune
 Neu-stromal
 ```
 
-The term `immune` replaces the original lymphocyte-oriented label. Macrophage-related final features are excluded. Stromal-related features are consistently named `stromal`.
+The term `immune` replaces the original lymphocyte-oriented label. Macrophage-related and residual non-target cell features are excluded. Stromal-related features are consistently named `stromal`.
 
 ## 3. Basic usage
 
