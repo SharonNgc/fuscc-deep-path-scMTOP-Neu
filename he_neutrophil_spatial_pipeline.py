@@ -296,10 +296,6 @@ def run_hovernet_wsi(
     print("=" * 90)
 
 
-# =============================================================================
-# 5. F2: Merge classic and neutrophil-focused JSON outputs
-# =============================================================================
-
 def merge_one_json(
     classic_json_path: str | Path,
     neutrophil_json_path: str | Path,
@@ -433,7 +429,7 @@ def merge_one_json(
 
 
 # =============================================================================
-# 6. F3: Cell graph construction and per-class feature export
+# 5. F3: Cell graph construction and per-class feature export
 # =============================================================================
 
 def run_one_graph_feature_extraction(
@@ -539,7 +535,7 @@ def run_one_graph_feature_extraction(
 
 
 # =============================================================================
-# 7. Final neutrophil-centered feature integration
+# 6. Final neutrophil-centered feature integration
 # =============================================================================
 
 def clean_graph_columns(
@@ -649,12 +645,12 @@ def run_final_summary(f3_dir: str | Path, final_output_csv: str | Path) -> pd.Da
 
 
 # =============================================================================
-# 8. One-sample F1-F2-F3 workflow
+# 7. One-sample F1-F3 workflow
 # =============================================================================
 
-def sample_f2_ready(sample_name: str, f2_dir: str | Path) -> bool:
+def sample_f1_final_ready(sample_name: str, f1_final_dir: str | Path) -> bool:
     """Check whether the merged JSON exists for one sample."""
-    return (Path(f2_dir) / f"{sample_name}.json").exists()
+    return (Path(f1_final_dir) / f"{sample_name}.json").exists()
 
 
 def sample_f3_ready(sample_name: str, f3_dir: str | Path) -> bool:
@@ -670,8 +666,8 @@ def sample_f3_ready(sample_name: str, f3_dir: str | Path) -> bool:
     return all(p.exists() for p in required_files)
 
 
-def run_one_sample_f1_f2_f3(wsi_path: str | Path, config: argparse.Namespace) -> Dict[str, str]:
-    """Run F1-F2-F3 for one WSI sample."""
+def run_one_sample_f1_f1_final_f3(wsi_path: str | Path, config: argparse.Namespace) -> Dict[str, str]:
+    """Run F1-F3 for one WSI sample."""
     wsi_path = Path(wsi_path)
     sample_name = get_sample_name_from_wsi(wsi_path)
 
@@ -679,7 +675,7 @@ def run_one_sample_f1_f2_f3(wsi_path: str | Path, config: argparse.Namespace) ->
     f1_neu_dir = Path(config.base_dir) / "F1_neutrophil"
     f1_classic_json_dir = f1_classic_dir / "json"
     f1_neu_json_dir = f1_neu_dir / "json"
-    f2_dir = Path(config.base_dir) / "F2_merged_json"
+    f1_final_dir = Path(config.base_dir) / "f1_final_merged_json"
     f3_dir = Path(config.base_dir) / "F3_graph_features"
     single_wsi_tmp_dir = Path(config.base_dir) / "_single_wsi_input"
 
@@ -766,18 +762,18 @@ def run_one_sample_f1_f2_f3(wsi_path: str | Path, config: argparse.Namespace) ->
         print(f"Warning: failed to delete temporary folder {single_input_dir}: {e}")
 
     try:
-        output_json_path = f2_dir / f"{sample_name}.json"
+        output_json_path = f1_final_dir / f"{sample_name}.json"
         n_cells = merge_one_json(classic_json_path, neu_json_path, output_json_path)
-        print(f"F2 finished for {sample_name}: merged cells = {n_cells}")
+        print(f"f1_final finished for {sample_name}: merged cells = {n_cells}")
     except Exception as e:
-        return {"Sample": sample_name, "Status": "Failed_F2_merge", "Message": str(e)}
+        return {"Sample": sample_name, "Status": "Failed_f1_final_merge", "Message": str(e)}
 
-    if not sample_f2_ready(sample_name, f2_dir):
-        return {"Sample": sample_name, "Status": "Failed_F2_json_missing", "Message": "F2 merged JSON was not generated."}
+    if not sample_f1_final_ready(sample_name, f1_final_dir):
+        return {"Sample": sample_name, "Status": "Failed_f1_final_json_missing", "Message": "f1_final merged JSON was not generated."}
 
     try:
         run_one_graph_feature_extraction(
-            json_path=f2_dir / f"{sample_name}.json",
+            json_path=f1_final_dir / f"{sample_name}.json",
             wsi_path=wsi_path,
             output_path=f3_dir,
             xml_path=None,
@@ -798,7 +794,7 @@ def run_one_sample_f1_f2_f3(wsi_path: str | Path, config: argparse.Namespace) ->
 
 
 # =============================================================================
-# 9. Command-line interface
+# 8. Command-line interface
 # =============================================================================
 
 def parse_args() -> argparse.Namespace:
@@ -810,8 +806,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input-wsi-dir", default=None, help="Input WSI directory. Default: <base-dir>/svs")
     parser.add_argument("--hover-dir", default="Hover", help="Local HoVer-Net repository folder.")
     parser.add_argument("--openslide-bin", default=None, help="Optional OpenSlide binary folder, mainly required on Windows.")
-    parser.add_argument("--classic-model-path", default="Hover/hovernet_fast_pannuke_type_tf2pytorch.tar")
-    parser.add_argument("--neutrophil-model-path", default="Hover/hovernet_fast_monusac_type_tf2pytorch.tar")
+    parser.add_argument("--classic-model-path", default="Hover/hovernet_fast_pannuke_type_tf1_finalpytorch.tar")
+    parser.add_argument("--neutrophil-model-path", default="Hover/hovernet_fast_monusac_type_tf1_finalpytorch.tar")
     parser.add_argument("--type-info-path", default="Hover/type_info.json")
     parser.add_argument("--classic-nr-types", type=int, default=6)
     parser.add_argument("--neutrophil-nr-types", type=int, default=5)
@@ -840,13 +836,13 @@ def main() -> None:
 
     f1_classic_dir = base_dir / "F1_classic"
     f1_neu_dir = base_dir / "F1_neutrophil"
-    f2_dir = base_dir / "F2_merged_json"
+    f1_final_dir = base_dir / "f1_final_merged_json"
     f3_dir = base_dir / "F3_graph_features"
     single_wsi_tmp_dir = base_dir / "_single_wsi_input"
     final_output_csv = base_dir / "HE_neutrophil_centered_features.csv"
     status_csv = base_dir / "HE_pipeline_sample_status.csv"
 
-    output_dirs = [f1_classic_dir, f1_neu_dir, f2_dir, f3_dir, single_wsi_tmp_dir]
+    output_dirs = [f1_classic_dir, f1_neu_dir, f1_final_dir, f3_dir, single_wsi_tmp_dir]
 
     prepare_environment(
         base_dir=base_dir,
@@ -866,7 +862,7 @@ def main() -> None:
     print(f"Input WSI directory : {input_wsi_dir}")
     print(f"F1 classic output   : {f1_classic_dir}")
     print(f"F1 neutrophil output: {f1_neu_dir}")
-    print(f"F2 merged JSON      : {f2_dir}")
+    print(f"f1_final merged JSON      : {f1_final_dir}")
     print(f"F3 graph features   : {f3_dir}")
     print(f"Final CSV           : {final_output_csv}")
     print(f"Status CSV          : {status_csv}")
@@ -882,7 +878,7 @@ def main() -> None:
         print("=" * 90)
         print(f"Running sample {idx}/{len(wsi_files)}: {sample_name}")
         print("=" * 90)
-        status = run_one_sample_f1_f2_f3(wsi_path, config)
+        status = run_one_sample_f1_f1_final_f3(wsi_path, config)
         sample_status.append(status)
         pd.DataFrame(sample_status).to_csv(status_csv, index=False)
         print(f"Status : {status.get('Status')}")

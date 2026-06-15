@@ -13,13 +13,10 @@ The pipeline contains four major stages:
 1. **F1: WSI cell detection and classification**  
    Run a classic HoVer-Net model and a neutrophil-focused HoVer-Net model on each WSI.
 
-2. **F2: JSON merging**  
-   Merge the two cell-level JSON outputs and remove overlapping duplicated detections.
-
-3. **F3: Cell graph construction**  
+2. **F3: Cell graph construction**  
    Build a spatial graph of detected cells and export per-cell graph features.
 
-4. **F4: Feature integration**  
+3. **F5: Feature integration**  
    Export a sample-level neutrophil-centered feature matrix.
 
 The final output is restricted to the following neutrophil-centered interaction groups:

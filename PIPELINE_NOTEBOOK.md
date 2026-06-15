@@ -13,8 +13,6 @@ HoVer-Net inference
     ↓
 Classic JSON + neutrophil-focused JSON
     ↓
-Merged cell-level JSON
-    ↓
 Cell graph construction
     ↓
 Neutrophil-centered spatial feature integration
