@@ -4,8 +4,7 @@
 HE neutrophil-centered spatial feature pipeline for whole-slide images.
 
 This script is a de-identified, GitHub-ready version of a local HE analysis
-pipeline. It runs HoVer-Net-based WSI inference, merges classic cell detection
-and neutrophil-focused detection outputs, constructs a cell graph, and exports
+pipeline. It runs HoVer-Net-based WSI inference, constructs a cell graph, and exports
 neutrophil-centered spatial interaction features.
 
 Final exported interaction variables are restricted to:
@@ -49,10 +48,10 @@ VALID_WSI_EXTS = [".svs", ".ndpi", ".tif", ".tiff", ".mrxs"]
 
 # Internal cell-type codes used by the downstream graph module.
 CELL_TYPE_CODE = {
-    "tumor": 1,      # T
-    "immune": 2,    # originally lymph/L; standardized here as immune
-    "neu": 4,       # neutrophils
-    "stromal": 5,   # standardized from connective/stroma
+    "tumor": 1,
+    "immune": 2,
+    "neu": 4,
+    "stromal": 5,
 }
 
 FINAL_INTERACTION_SPECS = [
@@ -297,55 +296,46 @@ def run_hovernet_wsi(
 
 
 def merge_one_json(
-    classic_json_path: str | Path,
-    neutrophil_json_path: str | Path,
+    modelA_json_path: str | Path,
+    modelB_json_path: str | Path,
     output_json_path: str | Path,
     overlap_threshold: float = 0.05,
 ) -> int:
-    """
-    Merge a classic HoVer-Net JSON with a neutrophil-focused HoVer-Net JSON.
 
-    The classic model is used as the base. Immune/neutrophil/stromal-related
-    detections from the neutrophil-focused model can replace overlapping base
-    detections when the overlap ratio exceeds ``overlap_threshold``.
-
-    The output keeps cell types 1-6 for graph-module compatibility.
-    """
-    classic_json_path = Path(classic_json_path)
-    neutrophil_json_path = Path(neutrophil_json_path)
+    modelA_json_path = Path(modelA_json_path)
+    modelB_json_path = Path(modelB_json_path)
     output_json_path = Path(output_json_path)
 
-    with classic_json_path.open("rb") as f:
-        ori_data = orjson.loads(f.read())
+    with modelA_json_path.open("rb") as f:
+        modelA_data = orjson.loads(f.read())
 
-    with neutrophil_json_path.open("rb") as f:
-        neu_data = orjson.loads(f.read())
+    with modelB_json_path.open("rb") as f:
+        modelB_data = orjson.loads(f.read())
 
-    ori_ids = [int(cell_id) for cell_id in ori_data["nuc"].keys()]
-    max_ori_id = max(ori_ids) if ori_ids else 0
-    id_offset = max_ori_id + 1
+    modelA_ids = [int(cell_id) for cell_id in modelA_data["nuc"].keys()]
+    max_modelA_id = max(modelA_ids) if modelA_ids else 0
+    id_offset = max_modelA_id + 1
 
-    merged_data = {"mag": ori_data.get("mag", None), "nuc": {}}
+    merged_data = {"mag": modelA_data.get("mag", None), "nuc": {}}
 
-    # Re-map classic model labels following the original implementation.
     type_mapping_ori = {
         3: CELL_TYPE_CODE["stromal"],
     }
 
-    ori_nuc = {}
-    for cell_id_str, cell_info in ori_data["nuc"].items():
+    modelA_nuc = {}
+    for cell_id_str, cell_info in modelA_data["nuc"].items():
         cell_id = int(cell_id_str)
         cell_type = cell_info.get("type", None)
         if cell_type in type_mapping_ori:
             cell_info["type"] = type_mapping_ori[cell_type]
-        ori_nuc[cell_id] = cell_info
+        modelA_nuc[cell_id] = cell_info
 
-    ori_data["nuc"] = ori_nuc
+    modelA_data["nuc"] = modelA_nuc
 
-    ori_idx = index.Index()
-    ori_cells = {}
+    modelA_idx = index.Index()
+    modelA_cells = {}
 
-    for cell_id, cell_info in ori_data["nuc"].items():
+    for cell_id, cell_info in modelA_data["nuc"].items():
         contour = cell_info.get("contour", None)
         if not (isinstance(contour, list) and len(contour) >= 3):
             continue
@@ -357,48 +347,48 @@ def merge_one_json(
                 continue
             minx, miny, maxx, maxy = polygon.bounds
             if minx <= maxx and miny <= maxy:
-                ori_cells[cell_id] = {"cell_info": cell_info, "polygon": polygon}
-                ori_idx.insert(cell_id, (minx, miny, maxx, maxy))
+                modelA_cells[cell_id] = {"cell_info": cell_info, "polygon": polygon}
+                modelA_idx.insert(cell_id, (minx, miny, maxx, maxy))
         except Exception:
             continue
 
-    for cell_id, cell_info in ori_data["nuc"].items():
+    for cell_id, cell_info in modelA_data["nuc"].items():
         merged_data["nuc"][cell_id] = cell_info
 
     # Types 2/3/4 are retained for compatibility.
-    for neu_id_str, neu_cell_info in neu_data["nuc"].items():
-        neu_type = neu_cell_info.get("type", None)
-        if neu_type not in [2, 3, 4]:
+    for modelB_id_str, modelB_cell_info in modelB_data["nuc"].items():
+        modelB_type = modelB_cell_info.get("type", None)
+        if modelB_type not in [2, 3, 4]:
             continue
 
-        contour = neu_cell_info.get("contour", None)
+        contour = modelB_cell_info.get("contour", None)
         if not (isinstance(contour, list) and len(contour) >= 3):
             continue
 
         try:
-            neu_polygon = Polygon(contour)
-            if not neu_polygon.is_valid:
-                neu_polygon = neu_polygon.buffer(0)
-            if neu_polygon.is_empty:
+            modelB_polygon = Polygon(contour)
+            if not modelB_polygon.is_valid:
+                modelB_polygon = modelB_polygon.buffer(0)
+            if modelB_polygon.is_empty:
                 continue
 
-            neu_area = neu_polygon.area
-            if neu_area <= 0:
+            modelB_area = modelB_polygon.area
+            if modelB_area <= 0:
                 continue
 
-            minx, miny, maxx, maxy = neu_polygon.bounds
-            possible_overlap_ids = list(ori_idx.intersection((minx, miny, maxx, maxy)))
+            minx, miny, maxx, maxy = modelB_polygon.bounds
+            possible_overlap_ids = list(modelA_idx.intersection((minx, miny, maxx, maxy)))
 
-            for ori_id in possible_overlap_ids:
-                ori_polygon = ori_cells[ori_id]["polygon"]
-                if neu_polygon.intersects(ori_polygon):
-                    intersection_area = neu_polygon.intersection(ori_polygon).area
-                    overlap_ratio = intersection_area / neu_area
-                    if overlap_ratio > overlap_threshold and ori_id in merged_data["nuc"]:
-                        del merged_data["nuc"][ori_id]
+            for modelA_id in possible_overlap_ids:
+                modelA_polygon = modelA_cells[modelA_id]["polygon"]
+                if modelB_polygon.intersects(modelA_polygon):
+                    intersection_area = modelB_polygon.intersection(modelA_polygon).area
+                    overlap_ratio = intersection_area / modelB_area
+                    if overlap_ratio > overlap_threshold and modelA_id in merged_data["nuc"]:
+                        del merged_data["nuc"][modelA_id]
 
-            new_neu_id = int(neu_id_str) + id_offset
-            merged_data["nuc"][new_neu_id] = neu_cell_info
+            new_modelB_id = int(modelB_id_str) + id_offset
+            merged_data["nuc"][new_modelB_id] = modelB_cell_info
 
         except Exception:
             continue
@@ -429,7 +419,7 @@ def merge_one_json(
 
 
 # =============================================================================
-# 5. F3: Cell graph construction and per-class feature export
+# 5. F2: Cell graph construction and per-class feature export
 # =============================================================================
 
 def run_one_graph_feature_extraction(
@@ -535,7 +525,7 @@ def run_one_graph_feature_extraction(
 
 
 # =============================================================================
-# 6. Final neutrophil-centered feature integration
+# 6. F3: Final neutrophil-centered feature integration
 # =============================================================================
 
 def clean_graph_columns(
@@ -588,7 +578,7 @@ def summarize_one_sample(sample_folder: str, f3_dir: str | Path) -> Dict[str, fl
 
     Final output variables are restricted to:
         Neu-tumor_<metric>
-        Neu-neu_<metric>
+        Neu-modelB_<metric>
         Neu-immune_<metric>
         Neu-stromal_<metric>
     """
@@ -671,10 +661,10 @@ def run_one_sample_f1_f1_final_f3(wsi_path: str | Path, config: argparse.Namespa
     wsi_path = Path(wsi_path)
     sample_name = get_sample_name_from_wsi(wsi_path)
 
-    f1_classic_dir = Path(config.base_dir) / "F1_classic"
-    f1_neu_dir = Path(config.base_dir) / "F1_neutrophil"
-    f1_classic_json_dir = f1_classic_dir / "json"
-    f1_neu_json_dir = f1_neu_dir / "json"
+    F1_modelA_dir = Path(config.base_dir) / "F1_modelA"
+    f1_modelB_dir = Path(config.base_dir) / "F1_modelB"
+    F1_modelA_json_dir = F1_modelA_dir / "json"
+    f1_modelB_json_dir = f1_modelB_dir / "json"
     f1_final_dir = Path(config.base_dir) / "f1_final_merged_json"
     f3_dir = Path(config.base_dir) / "F3_graph_features"
     single_wsi_tmp_dir = Path(config.base_dir) / "_single_wsi_input"
@@ -689,21 +679,21 @@ def run_one_sample_f1_f1_final_f3(wsi_path: str | Path, config: argparse.Namespa
         return {"Sample": sample_name, "Status": "Skipped_F3_exists", "Message": "F3 outputs already exist."}
 
     single_input_dir = prepare_single_wsi_input(wsi_path, sample_name, single_wsi_tmp_dir)
-    classic_json_path = f1_classic_json_dir / f"{sample_name}.json"
-    neu_json_path = f1_neu_json_dir / f"{sample_name}.json"
+    modelA_json_path = F1_modelA_json_dir / f"{sample_name}.json"
+    modelB_json_path = f1_modelB_json_dir / f"{sample_name}.json"
 
-    p_classic = Process(
+    p_modelA = Process(
         target=run_hovernet_wsi,
         kwargs={
             "input_dir": single_input_dir,
-            "output_dir": f1_classic_dir,
-            "model_path": config.classic_model_path,
-            "nr_types": config.classic_nr_types,
+            "output_dir": F1_modelA_dir,
+            "model_path": config.modelA_model_path,
+            "nr_types": config.modelA_nr_types,
             "hover_dir": config.hover_dir,
             "openslide_bin": config.openslide_bin,
             "type_info_path": config.type_info_path,
             "gpu": config.gpu,
-            "cache_path": Path(config.base_dir) / "_cache_classic",
+            "cache_path": Path(config.base_dir) / "_cache_modelA",
             "nr_inference_workers": config.nr_inference_workers,
             "nr_post_proc_workers": config.nr_post_proc_workers,
             "batch_size": config.batch_size,
@@ -716,18 +706,18 @@ def run_one_sample_f1_f1_final_f3(wsi_path: str | Path, config: argparse.Namespa
         },
     )
 
-    p_neu = Process(
+    p_modelB = Process(
         target=run_hovernet_wsi,
         kwargs={
             "input_dir": single_input_dir,
-            "output_dir": f1_neu_dir,
-            "model_path": config.neutrophil_model_path,
-            "nr_types": config.neutrophil_nr_types,
+            "output_dir": f1_modelB_dir,
+            "model_path": config.modelB_model_path,
+            "nr_types": config.modelB_nr_types,
             "hover_dir": config.hover_dir,
             "openslide_bin": config.openslide_bin,
             "type_info_path": config.type_info_path,
             "gpu": config.gpu,
-            "cache_path": Path(config.base_dir) / "_cache_neutrophil",
+            "cache_path": Path(config.base_dir) / "_cache_modelB",
             "nr_inference_workers": config.nr_inference_workers,
             "nr_post_proc_workers": config.nr_post_proc_workers,
             "batch_size": config.batch_size,
@@ -740,19 +730,19 @@ def run_one_sample_f1_f1_final_f3(wsi_path: str | Path, config: argparse.Namespa
         },
     )
 
-    print(f"Running classic and neutrophil-focused models in parallel: {sample_name}")
-    p_classic.start()
-    p_neu.start()
-    p_classic.join()
-    p_neu.join()
+    print(f"Running HoVer-Net models in parallel: {sample_name}")
+    p_modelA.start()
+    p_modelB.start()
+    p_modelA.join()
+    p_modelB.join()
 
-    print(f"Classic model exit code     : {p_classic.exitcode}")
-    print(f"Neutrophil model exit code  : {p_neu.exitcode}")
+    print(f"Model A exit code     : {p_modelA.exitcode}")
+    print(f"Model B exit code  : {p_modelB.exitcode}")
 
-    if not classic_json_path.exists():
-        return {"Sample": sample_name, "Status": "Failed_F1_classic_json_missing", "Message": f"Classic JSON missing: {classic_json_path}"}
-    if not neu_json_path.exists():
-        return {"Sample": sample_name, "Status": "Failed_F1_neutrophil_json_missing", "Message": f"Neutrophil JSON missing: {neu_json_path}"}
+    if not modelA_json_path.exists():
+        return {"Sample": sample_name, "Status": "Failed_F1_modelA_json_missing", "Message": f"Model A JSON missing: {modelA_json_path}"}
+    if not modelB_json_path.exists():
+        return {"Sample": sample_name, "Status": "Failed_F1_modelB_json_missing", "Message": f"Model B JSON missing: {modelB_json_path}"}
 
     try:
         if single_input_dir.exists():
@@ -763,7 +753,7 @@ def run_one_sample_f1_f1_final_f3(wsi_path: str | Path, config: argparse.Namespa
 
     try:
         output_json_path = f1_final_dir / f"{sample_name}.json"
-        n_cells = merge_one_json(classic_json_path, neu_json_path, output_json_path)
+        n_cells = merge_one_json(modelA_json_path, modelB_json_path, output_json_path)
         print(f"f1_final finished for {sample_name}: merged cells = {n_cells}")
     except Exception as e:
         return {"Sample": sample_name, "Status": "Failed_f1_final_merge", "Message": str(e)}
@@ -806,11 +796,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input-wsi-dir", default=None, help="Input WSI directory. Default: <base-dir>/svs")
     parser.add_argument("--hover-dir", default="Hover", help="Local HoVer-Net repository folder.")
     parser.add_argument("--openslide-bin", default=None, help="Optional OpenSlide binary folder, mainly required on Windows.")
-    parser.add_argument("--classic-model-path", default="Hover/hovernet_fast_pannuke_type_tf1_finalpytorch.tar")
-    parser.add_argument("--neutrophil-model-path", default="Hover/hovernet_fast_monusac_type_tf1_finalpytorch.tar")
+    parser.add_argument("--modelA-path", default="Hover/hovernet_fast_pannuke_type_tf1_finalpytorch.tar")
+    parser.add_argument("--modelB-path", default="Hover/hovernet_fast_monusac_type_tf1_finalpytorch.tar")
     parser.add_argument("--type-info-path", default="Hover/type_info.json")
-    parser.add_argument("--classic-nr-types", type=int, default=6)
-    parser.add_argument("--neutrophil-nr-types", type=int, default=5)
+    parser.add_argument("--modelA-nr-types", type=int, default=6)
+    parser.add_argument("--modelB-nr-types", type=int, default=5)
     parser.add_argument("--gpu", default="0")
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--nr-inference-workers", type=int, default=8)
@@ -834,15 +824,15 @@ def main() -> None:
     base_dir = Path(config.base_dir)
     input_wsi_dir = Path(config.input_wsi_dir) if config.input_wsi_dir else base_dir / "svs"
 
-    f1_classic_dir = base_dir / "F1_classic"
-    f1_neu_dir = base_dir / "F1_neutrophil"
+    F1_modelA_dir = base_dir / "F1_modelA"
+    f1_modelB_dir = base_dir / "F1_modelB"
     f1_final_dir = base_dir / "f1_final_merged_json"
     f3_dir = base_dir / "F3_graph_features"
     single_wsi_tmp_dir = base_dir / "_single_wsi_input"
-    final_output_csv = base_dir / "HE_neutrophil_centered_features.csv"
+    final_output_csv = base_dir / "HE_modelB_centered_features.csv"
     status_csv = base_dir / "HE_pipeline_sample_status.csv"
 
-    output_dirs = [f1_classic_dir, f1_neu_dir, f1_final_dir, f3_dir, single_wsi_tmp_dir]
+    output_dirs = [F1_modelA_dir, f1_modelB_dir, f1_final_dir, f3_dir, single_wsi_tmp_dir]
 
     prepare_environment(
         base_dir=base_dir,
@@ -860,8 +850,8 @@ def main() -> None:
     print("HE neutrophil-centered WSI pipeline started")
     print(f"Base directory      : {base_dir}")
     print(f"Input WSI directory : {input_wsi_dir}")
-    print(f"F1 classic output   : {f1_classic_dir}")
-    print(f"F1 neutrophil output: {f1_neu_dir}")
+    print(f"F1 model A output   : {F1_modelA_dir}")
+    print(f"F1 model B output: {f1_modelB_dir}")
     print(f"f1_final merged JSON      : {f1_final_dir}")
     print(f"F3 graph features   : {f3_dir}")
     print(f"Final CSV           : {final_output_csv}")
