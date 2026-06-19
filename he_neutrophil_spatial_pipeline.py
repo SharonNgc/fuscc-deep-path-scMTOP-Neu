@@ -33,11 +33,8 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 import numpy as np
-import orjson
 import pandas as pd
 import torch
-from rtree import index
-from shapely.geometry import Polygon
 
 
 # =============================================================================
@@ -46,20 +43,21 @@ from shapely.geometry import Polygon
 
 VALID_WSI_EXTS = [".svs", ".ndpi", ".tif", ".tiff", ".mrxs"]
 
-# Internal cell-type codes used by the downstream graph module.
+# Final consecutive cell-type codes used for downstream graph construction.
+# 1 = tumor, 2 = stromal, 3 = immune, 4 = neutrophil.
 CELL_TYPE_CODE = {
     "tumor": 1,
-    "immune": 2,
+    "stromal": 2,
+    "immune": 3,
     "neu": 4,
-    "stromal": 5,
 }
 
 FINAL_INTERACTION_SPECS = [
-    # output_group, dataframe_key, graph_prefix
-    ("Neu-tumor", "N", "Graph_T-N"),
-    ("Neu-neu", "N", "Graph_N-N"),
-    ("Neu-immune", "N", "Graph_L-N"),
-    ("Neu-stromal", "N", "Graph_N-S"),
+    # output_group, dataframe_key, candidate graph prefixes
+    ("Neu-tumor", "N", ["Graph_T-N"]),
+    ("Neu-neu", "N", ["Graph_N-N"]),
+    ("Neu-immune", "N", ["Graph_I-N", "Graph_L-N"]),
+    ("Neu-stromal", "N", ["Graph_N-S"]),
 ]
 
 GRAPH_METRICS = [
@@ -295,127 +293,61 @@ def run_hovernet_wsi(
     print("=" * 90)
 
 
-def merge_one_json(
+def build_selected_cell_json(
     modelA_json_path: str | Path,
     modelB_json_path: str | Path,
     output_json_path: str | Path,
-    overlap_threshold: float = 0.05,
 ) -> int:
+    """
+    Build the final JSON used for graph feature extraction from two HoVer-Net outputs.
 
+    No spatial overlap-based merging is performed in this GitHub-ready workflow.
+    Model A contributes tumor/stromal cells, whereas Model B contributes
+    immune/neutrophil cells.
+    """
     modelA_json_path = Path(modelA_json_path)
     modelB_json_path = Path(modelB_json_path)
     output_json_path = Path(output_json_path)
 
-    with modelA_json_path.open("rb") as f:
-        modelA_data = orjson.loads(f.read())
+    with modelA_json_path.open("r", encoding="utf-8") as f:
+        modelA_data = json.load(f)
 
-    with modelB_json_path.open("rb") as f:
-        modelB_data = orjson.loads(f.read())
+    with modelB_json_path.open("r", encoding="utf-8") as f:
+        modelB_data = json.load(f)
 
-    modelA_ids = [int(cell_id) for cell_id in modelA_data["nuc"].keys()]
-    max_modelA_id = max(modelA_ids) if modelA_ids else 0
-    id_offset = max_modelA_id + 1
-
-    merged_data = {"mag": modelA_data.get("mag", None), "nuc": {}}
-
-    type_mapping_ori = {
+    # Raw HoVer-Net type IDs are converted into the final consecutive mapping:
+    # 1 = tumor, 2 = stromal, 3 = immune, 4 = neutrophil.
+    modelA_type_mapping = {
+        1: CELL_TYPE_CODE["tumor"],
         3: CELL_TYPE_CODE["stromal"],
     }
+    modelB_type_mapping = {
+        2: CELL_TYPE_CODE["immune"],
+        3: CELL_TYPE_CODE["immune"],
+        4: CELL_TYPE_CODE["neu"],
+    }
 
-    modelA_nuc = {}
-    for cell_id_str, cell_info in modelA_data["nuc"].items():
-        cell_id = int(cell_id_str)
-        cell_type = cell_info.get("type", None)
-        if cell_type in type_mapping_ori:
-            cell_info["type"] = type_mapping_ori[cell_type]
-        modelA_nuc[cell_id] = cell_info
-
-    modelA_data["nuc"] = modelA_nuc
-
-    modelA_idx = index.Index()
-    modelA_cells = {}
-
-    for cell_id, cell_info in modelA_data["nuc"].items():
-        contour = cell_info.get("contour", None)
-        if not (isinstance(contour, list) and len(contour) >= 3):
-            continue
-        try:
-            polygon = Polygon(contour)
-            if not polygon.is_valid:
-                polygon = polygon.buffer(0)
-            if polygon.is_empty:
-                continue
-            minx, miny, maxx, maxy = polygon.bounds
-            if minx <= maxx and miny <= maxy:
-                modelA_cells[cell_id] = {"cell_info": cell_info, "polygon": polygon}
-                modelA_idx.insert(cell_id, (minx, miny, maxx, maxy))
-        except Exception:
-            continue
-
-    for cell_id, cell_info in modelA_data["nuc"].items():
-        merged_data["nuc"][cell_id] = cell_info
-
-    # Types 2/3/4 are retained for compatibility.
-    for modelB_id_str, modelB_cell_info in modelB_data["nuc"].items():
-        modelB_type = modelB_cell_info.get("type", None)
-        if modelB_type not in [2, 3, 4]:
-            continue
-
-        contour = modelB_cell_info.get("contour", None)
-        if not (isinstance(contour, list) and len(contour) >= 3):
-            continue
-
-        try:
-            modelB_polygon = Polygon(contour)
-            if not modelB_polygon.is_valid:
-                modelB_polygon = modelB_polygon.buffer(0)
-            if modelB_polygon.is_empty:
-                continue
-
-            modelB_area = modelB_polygon.area
-            if modelB_area <= 0:
-                continue
-
-            minx, miny, maxx, maxy = modelB_polygon.bounds
-            possible_overlap_ids = list(modelA_idx.intersection((minx, miny, maxx, maxy)))
-
-            for modelA_id in possible_overlap_ids:
-                modelA_polygon = modelA_cells[modelA_id]["polygon"]
-                if modelB_polygon.intersects(modelA_polygon):
-                    intersection_area = modelB_polygon.intersection(modelA_polygon).area
-                    overlap_ratio = intersection_area / modelB_area
-                    if overlap_ratio > overlap_threshold and modelA_id in merged_data["nuc"]:
-                        del merged_data["nuc"][modelA_id]
-
-            new_modelB_id = int(modelB_id_str) + id_offset
-            merged_data["nuc"][new_modelB_id] = modelB_cell_info
-
-        except Exception:
-            continue
-
-    final_nuc = {}
+    final_data = {"mag": modelA_data.get("mag", modelB_data.get("mag", None)), "nuc": {}}
     new_cell_id = 1
-    for _, cell_info in merged_data["nuc"].items():
-        cell_type = cell_info.get("type", None)
-        if cell_type is None:
-            continue
-        if cell_type in [
-            CELL_TYPE_CODE["tumor"],
-            CELL_TYPE_CODE["immune"],
-            CELL_TYPE_CODE["neu"],
-            CELL_TYPE_CODE["stromal"],
-        ]:
+
+    for source_data, type_mapping in [
+        (modelA_data, modelA_type_mapping),
+        (modelB_data, modelB_type_mapping),
+    ]:
+        for _, cell_info in source_data.get("nuc", {}).items():
+            raw_type = cell_info.get("type", None)
+            if raw_type not in type_mapping:
+                continue
+            cell_info["type"] = type_mapping[raw_type]
             cell_info = normalize_bbox(cell_info)
-            final_nuc[str(new_cell_id)] = cell_info
+            final_data["nuc"][str(new_cell_id)] = cell_info
             new_cell_id += 1
 
-    merged_data["nuc"] = final_nuc
     ensure_dir(output_json_path.parent)
-
     with output_json_path.open("w", encoding="utf-8") as f:
-        json.dump(merged_data, f)
+        json.dump(final_data, f)
 
-    return len(final_nuc)
+    return len(final_data["nuc"])
 
 
 # =============================================================================
@@ -452,7 +384,7 @@ def run_one_graph_feature_extraction(
     sample_name = json_path.stem
 
     with json_path.open("r", encoding="utf-8") as fp:
-        print(f"{' Loading merged JSON ':=^90s}")
+        print(f"{' Loading selected-cell JSON ':=^90s}")
         nucleus_info = json.load(fp)
 
     global_graph, edge_info = constructGraphFromDict(
@@ -485,7 +417,7 @@ def run_one_graph_feature_extraction(
 
     graph_pair_tokens_by_output = {
         "T": ["T"],
-        "I": ["L"],
+        "I": ["I", "L"],
         "N": ["N"],
         "S": ["S"],
     }
@@ -572,13 +504,26 @@ def safe_numeric_mean(df: pd.DataFrame, col: str, sample_name: str, df_label: st
     return float(s.mean())
 
 
+def find_graph_column(
+    df: pd.DataFrame,
+    graph_prefixes: Iterable[str],
+    metric: str,
+) -> Optional[str]:
+    """Return the first available graph column among candidate prefixes."""
+    for graph_prefix in graph_prefixes:
+        col = f"{graph_prefix}_{metric}"
+        if col in df.columns:
+            return col
+    return None
+
+
 def summarize_one_sample(sample_folder: str, f3_dir: str | Path) -> Dict[str, float | str]:
     """
     Summarize one sample into neutrophil-centered spatial interaction features.
 
     Final output variables are restricted to:
         Neu-tumor_<metric>
-        Neu-modelB_<metric>
+        Neu-neu_<metric>
         Neu-immune_<metric>
         Neu-stromal_<metric>
     """
@@ -588,18 +533,29 @@ def summarize_one_sample(sample_folder: str, f3_dir: str | Path) -> Dict[str, fl
     df_n = read_csv_or_empty(feats_n_path)
 
     required_cols = []
-    for _, _, graph_prefix in FINAL_INTERACTION_SPECS:
-        for metric in GRAPH_METRICS:
-            required_cols.append(f"{graph_prefix}_{metric}")
+    for _, _, graph_prefixes in FINAL_INTERACTION_SPECS:
+        for graph_prefix in graph_prefixes:
+            for metric in GRAPH_METRICS:
+                col = f"{graph_prefix}_{metric}"
+                if col in df_n.columns:
+                    required_cols.append(col)
 
     df_n = clean_graph_columns(df_n, required_cols, sample_folder, "Feats_N")
 
     result = {"Sample": sample_folder}
-    for output_group, _, graph_prefix in FINAL_INTERACTION_SPECS:
+    for output_group, _, graph_prefixes in FINAL_INTERACTION_SPECS:
         for metric in GRAPH_METRICS:
             output_col = f"{output_group}_{metric}"
-            graph_col = f"{graph_prefix}_{metric}"
-            result[output_col] = safe_numeric_mean(df_n, graph_col, sample_folder, "Feats_N")
+            graph_col = find_graph_column(df_n, graph_prefixes, metric)
+            if graph_col is None:
+                print(
+                    f"Warning: cannot find graph column for {output_group}_{metric} "
+                    f"in Feats_N for sample {sample_folder}; "
+                    f"candidate prefixes = {graph_prefixes}"
+                )
+                result[output_col] = np.nan
+            else:
+                result[output_col] = safe_numeric_mean(df_n, graph_col, sample_folder, "Feats_N")
     return result
 
 
@@ -638,9 +594,9 @@ def run_final_summary(f3_dir: str | Path, final_output_csv: str | Path) -> pd.Da
 # 7. One-sample F1-F3 workflow
 # =============================================================================
 
-def sample_f1_final_ready(sample_name: str, f1_final_dir: str | Path) -> bool:
-    """Check whether the merged JSON exists for one sample."""
-    return (Path(f1_final_dir) / f"{sample_name}.json").exists()
+def sample_f1_selected_ready(sample_name: str, f1_selected_dir: str | Path) -> bool:
+    """Check whether the selected-cell JSON exists for one sample."""
+    return (Path(f1_selected_dir) / f"{sample_name}.json").exists()
 
 
 def sample_f3_ready(sample_name: str, f3_dir: str | Path) -> bool:
@@ -656,7 +612,7 @@ def sample_f3_ready(sample_name: str, f3_dir: str | Path) -> bool:
     return all(p.exists() for p in required_files)
 
 
-def run_one_sample_f1_f1_final_f3(wsi_path: str | Path, config: argparse.Namespace) -> Dict[str, str]:
+def run_one_sample_f1_f3(wsi_path: str | Path, config: argparse.Namespace) -> Dict[str, str]:
     """Run F1-F3 for one WSI sample."""
     wsi_path = Path(wsi_path)
     sample_name = get_sample_name_from_wsi(wsi_path)
@@ -665,7 +621,7 @@ def run_one_sample_f1_f1_final_f3(wsi_path: str | Path, config: argparse.Namespa
     f1_modelB_dir = Path(config.base_dir) / "F1_modelB"
     F1_modelA_json_dir = F1_modelA_dir / "json"
     f1_modelB_json_dir = f1_modelB_dir / "json"
-    f1_final_dir = Path(config.base_dir) / "f1_final_merged_json"
+    f1_selected_dir = Path(config.base_dir) / "F1_selected_json"
     f3_dir = Path(config.base_dir) / "F3_graph_features"
     single_wsi_tmp_dir = Path(config.base_dir) / "_single_wsi_input"
 
@@ -737,7 +693,7 @@ def run_one_sample_f1_f1_final_f3(wsi_path: str | Path, config: argparse.Namespa
     p_modelB.join()
 
     print(f"Model A exit code     : {p_modelA.exitcode}")
-    print(f"Model B exit code  : {p_modelB.exitcode}")
+    print(f"Model B exit code     : {p_modelB.exitcode}")
 
     if not modelA_json_path.exists():
         return {"Sample": sample_name, "Status": "Failed_F1_modelA_json_missing", "Message": f"Model A JSON missing: {modelA_json_path}"}
@@ -752,18 +708,18 @@ def run_one_sample_f1_f1_final_f3(wsi_path: str | Path, config: argparse.Namespa
         print(f"Warning: failed to delete temporary folder {single_input_dir}: {e}")
 
     try:
-        output_json_path = f1_final_dir / f"{sample_name}.json"
-        n_cells = merge_one_json(modelA_json_path, modelB_json_path, output_json_path)
-        print(f"f1_final finished for {sample_name}: merged cells = {n_cells}")
+        output_json_path = f1_selected_dir / f"{sample_name}.json"
+        n_cells = build_selected_cell_json(modelA_json_path, modelB_json_path, output_json_path)
+        print(f"F1 selected-cell JSON finished for {sample_name}: retained cells = {n_cells}")
     except Exception as e:
-        return {"Sample": sample_name, "Status": "Failed_f1_final_merge", "Message": str(e)}
+        return {"Sample": sample_name, "Status": "Failed_F1_selected_json", "Message": str(e)}
 
-    if not sample_f1_final_ready(sample_name, f1_final_dir):
-        return {"Sample": sample_name, "Status": "Failed_f1_final_json_missing", "Message": "f1_final merged JSON was not generated."}
+    if not sample_f1_selected_ready(sample_name, f1_selected_dir):
+        return {"Sample": sample_name, "Status": "Failed_F1_selected_json_missing", "Message": "selected-cell JSON was not generated."}
 
     try:
         run_one_graph_feature_extraction(
-            json_path=f1_final_dir / f"{sample_name}.json",
+            json_path=f1_selected_dir / f"{sample_name}.json",
             wsi_path=wsi_path,
             output_path=f3_dir,
             xml_path=None,
@@ -826,13 +782,13 @@ def main() -> None:
 
     F1_modelA_dir = base_dir / "F1_modelA"
     f1_modelB_dir = base_dir / "F1_modelB"
-    f1_final_dir = base_dir / "f1_final_merged_json"
+    f1_selected_dir = base_dir / "F1_selected_json"
     f3_dir = base_dir / "F3_graph_features"
     single_wsi_tmp_dir = base_dir / "_single_wsi_input"
     final_output_csv = base_dir / "HE_modelB_centered_features.csv"
     status_csv = base_dir / "HE_pipeline_sample_status.csv"
 
-    output_dirs = [F1_modelA_dir, f1_modelB_dir, f1_final_dir, f3_dir, single_wsi_tmp_dir]
+    output_dirs = [F1_modelA_dir, f1_modelB_dir, f1_selected_dir, f3_dir, single_wsi_tmp_dir]
 
     prepare_environment(
         base_dir=base_dir,
@@ -851,8 +807,8 @@ def main() -> None:
     print(f"Base directory      : {base_dir}")
     print(f"Input WSI directory : {input_wsi_dir}")
     print(f"F1 model A output   : {F1_modelA_dir}")
-    print(f"F1 model B output: {f1_modelB_dir}")
-    print(f"f1_final merged JSON      : {f1_final_dir}")
+    print(f"F1 model B output   : {f1_modelB_dir}")
+    print(f"F1 selected-cell JSON: {f1_selected_dir}")
     print(f"F3 graph features   : {f3_dir}")
     print(f"Final CSV           : {final_output_csv}")
     print(f"Status CSV          : {status_csv}")
@@ -868,7 +824,7 @@ def main() -> None:
         print("=" * 90)
         print(f"Running sample {idx}/{len(wsi_files)}: {sample_name}")
         print("=" * 90)
-        status = run_one_sample_f1_f1_final_f3(wsi_path, config)
+        status = run_one_sample_f1_f3(wsi_path, config)
         sample_status.append(status)
         pd.DataFrame(sample_status).to_csv(status_csv, index=False)
         print(f"Status : {status.get('Status')}")
