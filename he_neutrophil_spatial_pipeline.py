@@ -56,7 +56,7 @@ FINAL_INTERACTION_SPECS = [
     # output_group, dataframe_key, candidate graph prefixes
     ("Neu-tumor", "N", ["Graph_T-N"]),
     ("Neu-neu", "N", ["Graph_N-N"]),
-    ("Neu-immune", "N", ["Graph_I-N", "Graph_L-N"]),
+    ("Neu-immune", "N", ["Graph_I-N"]),
     ("Neu-stromal", "N", ["Graph_N-S"]),
 ]
 
@@ -293,61 +293,13 @@ def run_hovernet_wsi(
     print("=" * 90)
 
 
-def build_selected_cell_json(
-    modelA_json_path: str | Path,
-    modelB_json_path: str | Path,
-    output_json_path: str | Path,
-) -> int:
-    """
-    Build the final JSON used for graph feature extraction from two HoVer-Net outputs.
-
-    No spatial overlap-based merging is performed in this GitHub-ready workflow.
-    Model A contributes tumor/stromal cells, whereas Model B contributes
-    immune/neutrophil cells.
-    """
-    modelA_json_path = Path(modelA_json_path)
-    modelB_json_path = Path(modelB_json_path)
-    output_json_path = Path(output_json_path)
-
-    with modelA_json_path.open("r", encoding="utf-8") as f:
-        modelA_data = json.load(f)
-
-    with modelB_json_path.open("r", encoding="utf-8") as f:
-        modelB_data = json.load(f)
-
-    # Raw HoVer-Net type IDs are converted into the final consecutive mapping:
-    # 1 = tumor, 2 = stromal, 3 = immune, 4 = neutrophil.
-    modelA_type_mapping = {
-        1: CELL_TYPE_CODE["tumor"],
-        3: CELL_TYPE_CODE["stromal"],
-    }
-    modelB_type_mapping = {
-        2: CELL_TYPE_CODE["immune"],
-        3: CELL_TYPE_CODE["immune"],
-        4: CELL_TYPE_CODE["neu"],
-    }
-
-    final_data = {"mag": modelA_data.get("mag", modelB_data.get("mag", None)), "nuc": {}}
-    new_cell_id = 1
-
-    for source_data, type_mapping in [
-        (modelA_data, modelA_type_mapping),
-        (modelB_data, modelB_type_mapping),
-    ]:
-        for _, cell_info in source_data.get("nuc", {}).items():
-            raw_type = cell_info.get("type", None)
-            if raw_type not in type_mapping:
-                continue
-            cell_info["type"] = type_mapping[raw_type]
-            cell_info = normalize_bbox(cell_info)
-            final_data["nuc"][str(new_cell_id)] = cell_info
-            new_cell_id += 1
-
-    ensure_dir(output_json_path.parent)
-    with output_json_path.open("w", encoding="utf-8") as f:
-        json.dump(final_data, f)
-
-    return len(final_data["nuc"])
+# In the final workflow, tumor and stromal cells were retained from Model A,
+# whereas non-neutrophil immune cells and neutrophils were retained from Model B.
+# For each retained cell, the cell-type label, nuclear coordinates, bounding box
+# and available nuclear metadata were preserved for downstream spatial graph
+# feature extraction.
+#
+# Final mapping: 1 = tumor, 2 = stromal, 3 = immune, 4 = neutrophil.
 
 
 # =============================================================================
@@ -368,7 +320,7 @@ def run_one_graph_feature_extraction(
 
     Output files:
         <sample>_Feats_T.csv  : tumor cells
-        <sample>_Feats_I.csv  : immune cells, originally lymph/L
+        <sample>_Feats_I.csv  : immune cells
         <sample>_Feats_N.csv  : neutrophils
         <sample>_Feats_S.csv  : stromal cells
         <sample>_Edges.csv    : graph edges
@@ -417,7 +369,7 @@ def run_one_graph_feature_extraction(
 
     graph_pair_tokens_by_output = {
         "T": ["T"],
-        "I": ["I", "L"],
+        "I": ["I"],
         "N": ["N"],
         "S": ["S"],
     }
@@ -471,8 +423,6 @@ def clean_graph_columns(
 
     Imputation rules:
         - minEdgeLength / meanEdgeLength: NA -> 100
-        - Nsubgraph: NA -> 1
-        - Degrees: NA -> 0
     """
     if df.empty:
         return df
@@ -485,10 +435,6 @@ def clean_graph_columns(
         df[col] = pd.to_numeric(df[col], errors="coerce")
         if "minEdgeLength" in col or "meanEdgeLength" in col:
             df[col] = df[col].fillna(100)
-        elif "Nsubgraph" in col:
-            df[col] = df[col].fillna(1)
-        elif "Degrees" in col:
-            df[col] = df[col].fillna(0)
     return df
 
 
